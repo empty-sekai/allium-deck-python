@@ -50,6 +50,20 @@ def test_native_score_recommendation_materializes_lunabot_fields():
     assert all(card.total_power > 0 for card in deck.cards)
     assert all(card.default_image in ("original", "special_training") for card in deck.cards)
 
+    later_card = next(
+        card.card_id
+        for candidate_deck in result.decks[1:]
+        for card in candidate_deck.cards
+        if card.card_id not in {top.card_id for top in deck.cards}
+    )
+    options.fixed_cards = [later_card]
+    constrained = engine.recommend(options)
+    assert constrained.decks
+    assert all(
+        later_card in {card.card_id for card in candidate.cards}
+        for candidate in constrained.decks
+    )
+
     with pytest.raises(ValueError):
         engine.update_masterdata_from_strings({"cards": "[]"}, "cn")
     assert engine.recommend(options).decks

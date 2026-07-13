@@ -19,7 +19,10 @@ jobs:
         with:
           python-version: "3.10"
       - uses: dtolnay/rust-toolchain@stable
-      - run: python -m pip install pytest maturin ruff
+      - run: python -m pip install pytest maturin ruff tomli
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python -c "import os, pathlib, tomli; version=tomli.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']; assert os.environ['GITHUB_REF_NAME'] == f'v{version}', f'tag must be v{version}'"
       - run: cargo test --release
       - run: ruff check python tests
       - run: PYTHONPATH=python pytest -q tests/test_lunabot_contract.py
@@ -42,6 +45,14 @@ jobs:
         with:
           name: wheels-linux-${{ matrix.target }}
           path: dist/*.whl
+      - uses: actions/setup-python@v5
+        if: matrix.target == 'x86_64'
+        with:
+          python-version: "3.10"
+      - if: matrix.target == 'x86_64'
+        run: python -m pip install dist/*.whl
+      - if: matrix.target == 'x86_64'
+        run: python -c "import _allium_deck_native, allium_deck, sekai_deck_recommend_cpp"
 
   windows:
     runs-on: windows-latest
@@ -56,6 +67,12 @@ jobs:
         with:
           name: wheels-windows-x86_64
           path: dist/*.whl
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - shell: pwsh
+        run: python -m pip install (Get-ChildItem dist/*.whl).FullName
+      - run: python -c "import _allium_deck_native, allium_deck, sekai_deck_recommend_cpp"
 
   macos:
     strategy:
@@ -78,6 +95,11 @@ jobs:
         with:
           name: wheels-macos-${{ matrix.target }}
           path: dist/*.whl
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install dist/*.whl
+      - run: python -c "import _allium_deck_native, allium_deck, sekai_deck_recommend_cpp"
 
   smoke:
     needs: [linux, windows, macos]

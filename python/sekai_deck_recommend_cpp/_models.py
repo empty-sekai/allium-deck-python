@@ -119,6 +119,18 @@ class DeckRecommendGaOptions(_CompatModel):
 
 
 class DeckRecommendOptions(_CompatModel):
+    _native_key_aliases = {
+        "fixed_cards": "fixedCards",
+        "fixed_characters": "fixedCharacters",
+        "filter_other_unit": "filterOtherUnit",
+        "keep_after_training_state": "keepAfterTrainingState",
+        "best_skill_as_leader": "bestSkillAsLeader",
+        "skill_reference_choose_strategy": "skillReferenceChooseStrategy",
+        "skill_order_choose_strategy": "skillOrderChooseStrategy",
+        "multi_live_teammate_score_up": "multiLiveTeammateScoreUp",
+        "multi_live_teammate_power": "multiLiveTeammatePower",
+    }
+    _algorithm_aliases = {"dfs", "ga", "dfs_ga", "rl", "sa"}
     _defaults = {
         "target": "score",
         "algorithm": "dfs",
@@ -181,6 +193,12 @@ class DeckRecommendOptions(_CompatModel):
         if self.member not in (None, 5):
             raise ValueError("allium-deck only supports 5-member decks")
         result = _drop_none(self.to_dict())
+        algorithm = str(self.algorithm).strip().lower()
+        if algorithm not in self._algorithm_aliases:
+            raise ValueError(f"unsupported algorithm: {self.algorithm}")
+        for source, target in self._native_key_aliases.items():
+            if source in result:
+                result[target] = result.pop(source)
         result["algorithm"] = "dfs"
         result.pop("user_data", None)
         return result

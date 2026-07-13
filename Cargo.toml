@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 allium-deck = { git = "https://github.com/empty-sekai/allium-deck.git", rev = "41495933b2afb86b49242b6cd769f32810db7308" }
-pyo3 = { version = "0.23", features = ["abi3-py310", "extension-module"] }
+pyo3 = { version = "0.23", features = ["abi3-py310"] }
 serde_json = "1"
 
 [profile.release]

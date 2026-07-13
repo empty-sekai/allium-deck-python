@@ -68,6 +68,35 @@ def test_native_payload_omits_unset_optional_fields():
     assert "custom_bonus_character_support_units" not in payload
 
 
+def test_native_payload_maps_lunabot_constraints_to_rust_keys():
+    options = DeckRecommendOptions.from_dict(
+        {
+            "fixed_cards": [1],
+            "fixed_characters": [2],
+            "filter_other_unit": True,
+            "keep_after_training_state": True,
+            "best_skill_as_leader": False,
+            "skill_reference_choose_strategy": "max",
+            "skill_order_choose_strategy": "average",
+            "multi_live_teammate_score_up": 200,
+            "multi_live_teammate_power": 250000,
+        }
+    )
+
+    payload = options.to_native_dict()
+    assert payload["fixedCards"] == [1]
+    assert payload["fixedCharacters"] == [2]
+    assert payload["filterOtherUnit"] is True
+    assert payload["keepAfterTrainingState"] is True
+    assert payload["bestSkillAsLeader"] is False
+    assert payload["skillReferenceChooseStrategy"] == "max"
+    assert payload["skillOrderChooseStrategy"] == "average"
+    assert payload["multiLiveTeammateScoreUp"] == 200
+    assert payload["multiLiveTeammatePower"] == 250000
+    assert "fixed_cards" not in payload
+    assert "multi_live_teammate_power" not in payload
+
+
 @pytest.mark.parametrize("member", [0, 1, 4, 6])
 def test_other_member_counts_are_rejected_before_native(member):
     options = DeckRecommendOptions()
@@ -81,6 +110,13 @@ def test_legacy_algorithm_names_normalize_to_dfs(algorithm):
     options = DeckRecommendOptions()
     options.algorithm = algorithm
     assert options.to_native_dict()["algorithm"] == "dfs"
+
+
+def test_unknown_algorithm_is_rejected():
+    options = DeckRecommendOptions()
+    options.algorithm = "typo"
+    with pytest.raises(ValueError, match="algorithm"):
+        options.to_native_dict()
 
 
 def test_result_objects_roundtrip_and_remain_mutable():

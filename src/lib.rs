@@ -85,15 +85,13 @@ impl NativeEngine {
     }
 
     fn update_musicmetas(&self, music_metas: &str, region: &str) -> PyResult<()> {
-        let (tables, game) = {
-            let regions = self.regions.read().map_err(lock_error)?;
-            let current = regions.get(region).ok_or_else(|| {
-                PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
-            })?;
-            let game = build_game(&current.tables, music_metas).map_err(PyValueError::new_err)?;
-            (current.tables.clone(), Arc::new(game))
-        };
-        self.regions.write().map_err(lock_error)?.insert(
+        let mut regions = self.regions.write().map_err(lock_error)?;
+        let current = regions.get(region).ok_or_else(|| {
+            PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
+        })?;
+        let tables = current.tables.clone();
+        let game = Arc::new(build_game(&tables, music_metas).map_err(PyValueError::new_err)?);
+        regions.insert(
             region.to_string(),
             RegionData {
                 tables,
@@ -130,15 +128,13 @@ impl NativeEngine {
 
 impl NativeEngine {
     fn replace_tables(&self, region: &str, tables: BTreeMap<String, String>) -> PyResult<()> {
-        let music_metas = self
-            .regions
-            .read()
-            .map_err(lock_error)?
+        let mut regions = self.regions.write().map_err(lock_error)?;
+        let music_metas = regions
             .get(region)
             .map(|data| data.music_metas.clone())
             .unwrap_or_else(|| "[]".to_string());
         let game = Arc::new(build_game(&tables, &music_metas).map_err(PyValueError::new_err)?);
-        self.regions.write().map_err(lock_error)?.insert(
+        regions.insert(
             region.to_string(),
             RegionData {
                 tables,
@@ -375,4 +371,62 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeEngine>()?;
     module.add_class::<NativeUserData>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    fn empty_tables(cards: String) -> BTreeMap<String, String> {
+        let mut tables = [
+            "gameCharacterUnits.json",
+            "events.json",
+            "cardRarities.json",
+            "cardEpisodes.json",
+            "masterLessons.json",
+            "skills.json",
+            "areaItemLevels.json",
+            "characterRanks.json",
+            "cardMysekaiCanvasBonuses.json",
+            "eventCards.json",
+            "eventDeckBonuses.json",
+            "eventCardBonusLimits.json",
+            "eventHonorBonuses.json",
+            "worldBloomDifferentAttributeBonuses.json",
+            "eventSkillScoreUpLimits.json",
+            "eventRarityBonusRates.json",
+        ]
+        .into_iter()
+        .map(|name| (name.to_string(), "[]".to_string()))
+        .collect::<BTreeMap<_, _>>();
+        tables.insert("cards.json".to_string(), cards);
+        tables
+    }
+
+    #[test]
+    fn concurrent_table_and_music_updates_preserve_both_successes() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Arc::new(NativeEngine::new());
+        engine
+            .replace_tables("cn", empty_tables("[]".to_string()))
+            .expect("initial tables");
+
+        let slow_cards = format!("[{}]", " ".repeat(32 * 1024 * 1024));
+        let updater = Arc::clone(&engine);
+        let table_thread = thread::spawn(move || {
+            updater
+                .replace_tables("cn", empty_tables(slow_cards))
+                .expect("table update")
+        });
+        thread::sleep(Duration::from_millis(20));
+        engine.update_musicmetas("[ ]", "cn").expect("music update");
+        table_thread.join().expect("table thread");
+
+        let regions = engine.regions.read().expect("regions");
+        let current = regions.get("cn").expect("cn region");
+        assert_eq!(current.music_metas, "[ ]");
+        assert!(current.tables["cards.json"].len() > 32 * 1024 * 1024);
+    }
 }
