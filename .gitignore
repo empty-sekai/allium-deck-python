@@ -1,0 +1,12 @@
+/target/
+/dist/
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+/docs/
+/.tmp/
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dylib

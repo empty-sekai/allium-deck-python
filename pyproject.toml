@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "allium-sekai-deck"
+version = "0.0.1"
+requires-python = ">=3.10,<4"
+license = { file = "LICENSE-MIT" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Rust",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "_allium_deck_native._native"
+python-packages = ["allium_deck", "sekai_deck_recommend_cpp"]
+bindings = "pyo3"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
