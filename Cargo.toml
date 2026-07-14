@@ -10,7 +10,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-allium-deck = { git = "https://github.com/empty-sekai/allium-deck.git", rev = "41495933b2afb86b49242b6cd769f32810db7308" }
+allium-deck = { git = "https://github.com/empty-sekai/allium-deck.git", rev = "2cf7e77736c1d545f0858ec96711feae9e6fcbed" }
 pyo3 = { version = "0.23", features = ["abi3-py310"] }
 serde_json = "1"
 
