@@ -5,7 +5,9 @@ build-backend = "maturin"
 [project]
 name = "allium-sekai-deck"
 version = "0.0.1"
+description = "Precompiled Rust deck recommendation engine for Python and LunaBot integrations"
 requires-python = ">=3.10,<4"
+readme = "README.md"
 license = { file = "LICENSE-MIT" }
 classifiers = [
   "Programming Language :: Python :: 3",
