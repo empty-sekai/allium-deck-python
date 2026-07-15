@@ -41,6 +41,23 @@ from sekai_deck_recommend_cpp import (
 Masterdata, music metadata, and user data remain runtime inputs and are not
 bundled into the wheel. The recommendation engine uses Allium's DFS search.
 
+## API coverage
+
+The `sekai_deck_recommend_cpp` interface includes the complete LunaBot deck
+workflow:
+
+- mutable option, user-data, card, deck, support-deck, and result objects
+- single and batch recommendation
+- World Bloom support-deck calculation
+- area-item upgrade recommendation
+- per-music score and event-point calculation
+- note-level exact live calculation
+- configurable batch worker count
+
+Each recommendation result includes `cost_ms`, the wall-clock time spent in the
+native search itself. Batch results report this value independently for every
+request.
+
 ## License
 
 MIT

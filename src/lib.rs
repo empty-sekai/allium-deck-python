@@ -6,22 +6,30 @@ use std::time::Instant;
 use allium_deck::engine::{
     parse_build_params_json, parse_user_profile_json, MasterdataSources, OwnedGameData,
 };
+use allium_deck::auxiliary::{
+    recommend_music, AuxiliaryData, MusicDeck, MusicDeckCard, MusicRecommendOptions,
+};
 use allium_deck::handler::{
-    build_card_pool_with_details, cultivated_user_cards, FullPrecisionCard, UserCard, UserProfile,
+    build_card_pool_with_details, cultivated_user_cards, world_bloom_support_cards,
+    FullPrecisionCard, UserCard, UserProfile,
 };
 use allium_deck::pool::{CardIdx, CardPool};
 use allium_deck::search::{
     search, search_bonus_targets, summarize_deck, SearchContext, SearchParams,
 };
-use allium_deck::{DefaultImage, PowerDetail, ScoreTarget, DECK_SIZE};
+use allium_deck::{DefaultImage, EventType, LiveType, PowerDetail, ScoreTarget, DECK_SIZE};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
 
+const MYSEKAI_EVENT_POINT: i32 = 2_500;
+
 struct RegionData {
     tables: BTreeMap<String, String>,
     music_metas: String,
+    loaded_music_metas: Arc<Vec<allium_deck::handler::MusicMeta>>,
     game: Arc<OwnedGameData>,
+    auxiliary: Arc<AuxiliaryData>,
 }
 
 #[pyclass]
@@ -90,13 +98,19 @@ impl NativeEngine {
             PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
         })?;
         let tables = current.tables.clone();
+        let loaded_music_metas = Arc::new(
+            parse_loaded_music_metas(music_metas).map_err(PyValueError::new_err)?,
+        );
         let game = Arc::new(build_game(&tables, music_metas).map_err(PyValueError::new_err)?);
+        let auxiliary = Arc::clone(&current.auxiliary);
         regions.insert(
             region.to_string(),
             RegionData {
                 tables,
                 music_metas: music_metas.to_string(),
+                loaded_music_metas,
                 game,
+                auxiliary,
             },
         );
         Ok(())
@@ -124,25 +138,366 @@ impl NativeEngine {
         py.allow_threads(move || recommend_json(&user, &game, &params))
             .map_err(PyRuntimeError::new_err)
     }
+
+    fn get_world_bloom_support_cards(
+        &self,
+        py: Python<'_>,
+        region: &str,
+        options_json: &str,
+        user_data: &NativeUserData,
+    ) -> PyResult<String> {
+        let game = self.region_game(region)?;
+        let mut params = parse_build_params_json(options_json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let raw: Value = serde_json::from_str(options_json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        if params.world_bloom_character_id.is_none() {
+            params.world_bloom_character_id = raw
+                .get("forcedLeaderCharacterId")
+                .and_then(Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok());
+        }
+        let support_master_max = raw
+            .get("support_master_max")
+            .or_else(|| raw.get("supportMasterMax"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let support_skill_max = raw
+            .get("support_skill_max")
+            .or_else(|| raw.get("supportSkillMax"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let filter_other_unit = raw
+            .get("filter_other_unit")
+            .or_else(|| raw.get("filterOtherUnit"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let user = Arc::clone(&user_data.profile);
+        py.allow_threads(move || {
+            let game_ref = game.as_ref().as_ref();
+            let cards = world_bloom_support_cards(
+                &user,
+                &game_ref,
+                &params,
+                support_master_max,
+                support_skill_max,
+                filter_other_unit,
+            )
+            .map_err(|error| error.to_string())?;
+            let output = cards
+                .into_iter()
+                .map(|card| {
+                    json!({
+                        "card_id": card.card_id,
+                        "bonus": card.bonus,
+                        "skill_level": card.skill_level,
+                        "master_rank": card.master_rank,
+                        "level": card.level,
+                        "after_training": card.after_training,
+                        "default_image": default_image(card.default_image),
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_string(&output).map_err(|error| error.to_string())
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+
+    fn recommend_area_items(
+        &self,
+        py: Python<'_>,
+        region: &str,
+        card_ids: Vec<i32>,
+        user_data: &NativeUserData,
+    ) -> PyResult<String> {
+        let (game, auxiliary) = self.region_calculators(region)?;
+        let user = Arc::clone(&user_data.profile);
+        py.allow_threads(move || {
+            let game_ref = game.as_ref().as_ref();
+            let result = auxiliary.recommend_area_items(&user, &game_ref, &card_ids)?;
+            serde_json::to_string(&result).map_err(|error| error.to_string())
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+
+    fn recommend_music(
+        &self,
+        py: Python<'_>,
+        region: &str,
+        options_json: &str,
+        deck_json: &str,
+    ) -> PyResult<String> {
+        let (game, loaded_music_metas) = self.region_music(region)?;
+        let params = parse_build_params_json(options_json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let deck_value: Value = serde_json::from_str(deck_json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let deck = music_deck_from_json(&deck_value).map_err(PyValueError::new_err)?;
+        let event_type = resolve_event_type(&game, &params).map_err(PyValueError::new_err)?;
+        let live_type = if matches!(params.live_type, LiveType::Multi)
+            && matches!(event_type, EventType::CheerfulCarnival)
+        {
+            LiveType::Cheerful
+        } else if matches!(params.live_type, LiveType::Mysekai) {
+            LiveType::Multi
+        } else {
+            params.live_type
+        };
+        let options = MusicRecommendOptions {
+            live_type,
+            event_type,
+            skill_order: params.live_skill_order,
+            specific_skill_order: params
+                .specific_skill_order
+                .map(|order| order.into_iter().collect()),
+            multi_teammate_score_up: params.multi_teammate_score_up,
+            multi_teammate_power: params.multi_teammate_power,
+        };
+        py.allow_threads(move || {
+            let result = recommend_music(&loaded_music_metas, &deck, &options)?;
+            serde_json::to_string(&result).map_err(|error| error.to_string())
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        region,
+        power,
+        skills,
+        live_type,
+        music_score_json,
+        multi_sum_power = 0,
+        fever_music_score_json = None
+    ))]
+    fn calculate_exact_live(
+        &self,
+        py: Python<'_>,
+        region: &str,
+        power: i32,
+        skills: Vec<f64>,
+        live_type: &str,
+        music_score_json: &str,
+        multi_sum_power: i32,
+        fever_music_score_json: Option<&str>,
+    ) -> PyResult<String> {
+        let (_, auxiliary) = self.region_calculators(region)?;
+        let live_type = parse_live_type(live_type).map_err(PyValueError::new_err)?;
+        py.allow_threads(move || {
+            let result = auxiliary.calculate_exact_live(
+                power,
+                &skills,
+                live_type,
+                music_score_json,
+                multi_sum_power,
+                fever_music_score_json,
+            )?;
+            serde_json::to_string(&result).map_err(|error| error.to_string())
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
 }
 
 impl NativeEngine {
+    fn region_game(&self, region: &str) -> PyResult<Arc<OwnedGameData>> {
+        self.regions
+            .read()
+            .map_err(lock_error)?
+            .get(region)
+            .map(|data| Arc::clone(&data.game))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
+            })
+    }
+
+    fn region_calculators(
+        &self,
+        region: &str,
+    ) -> PyResult<(Arc<OwnedGameData>, Arc<AuxiliaryData>)> {
+        self.regions
+            .read()
+            .map_err(lock_error)?
+            .get(region)
+            .map(|data| (Arc::clone(&data.game), Arc::clone(&data.auxiliary)))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
+            })
+    }
+
+    fn region_music(
+        &self,
+        region: &str,
+    ) -> PyResult<(Arc<OwnedGameData>, Arc<Vec<allium_deck::handler::MusicMeta>>)> {
+        self.regions
+            .read()
+            .map_err(lock_error)?
+            .get(region)
+            .map(|data| (Arc::clone(&data.game), Arc::clone(&data.loaded_music_metas)))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
+            })
+    }
+
     fn replace_tables(&self, region: &str, tables: BTreeMap<String, String>) -> PyResult<()> {
         let mut regions = self.regions.write().map_err(lock_error)?;
         let music_metas = regions
             .get(region)
             .map(|data| data.music_metas.clone())
             .unwrap_or_else(|| "[]".to_string());
+        let loaded_music_metas = Arc::new(
+            parse_loaded_music_metas(&music_metas).map_err(PyValueError::new_err)?,
+        );
         let game = Arc::new(build_game(&tables, &music_metas).map_err(PyValueError::new_err)?);
+        let auxiliary = Arc::new(
+            AuxiliaryData::from_strings(&tables).map_err(PyValueError::new_err)?,
+        );
         regions.insert(
             region.to_string(),
             RegionData {
                 tables,
                 music_metas,
+                loaded_music_metas,
                 game,
+                auxiliary,
             },
         );
         Ok(())
+    }
+}
+
+fn parse_loaded_music_metas(text: &str) -> Result<Vec<allium_deck::handler::MusicMeta>, String> {
+    let rows: Vec<Value> =
+        serde_json::from_str(text).map_err(|error| format!("invalid music metas: {error}"))?;
+    rows.iter()
+        .map(|row| {
+            let event_rate = value_i32(row, "event_rate")?;
+            Ok(allium_deck::handler::MusicMeta {
+                music_id: value_i32(row, "music_id")?,
+                difficulty: row
+                    .get("difficulty")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                event_rate_solo: event_rate,
+                event_rate_multi: event_rate,
+                event_rate_auto: event_rate,
+                base_score: value_f64(row, "base_score")?,
+                base_score_auto: value_f64(row, "base_score_auto")?,
+                fever_score: value_f64(row, "fever_score")?,
+                solo_skill_scores: value_f64_array(row, "skill_score_solo")?,
+                multi_skill_scores: value_f64_array(row, "skill_score_multi")?,
+                auto_skill_scores: value_f64_array(row, "skill_score_auto")?,
+                music_time: value_f64(row, "music_time")?,
+                tap_count: value_i32(row, "tap_count")?,
+            })
+        })
+        .collect()
+}
+
+fn value_i32(value: &Value, key: &str) -> Result<i32, String> {
+    value
+        .get(key)
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| format!("music meta field {key} is required"))
+}
+
+fn value_f64(value: &Value, key: &str) -> Result<f64, String> {
+    value
+        .get(key)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("music meta field {key} is required"))
+}
+
+fn value_f64_array(value: &Value, key: &str) -> Result<[f64; 6], String> {
+    let values = value
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("music meta field {key} is required"))?;
+    if values.len() != 6 {
+        return Err(format!("music meta field {key} must contain 6 values"));
+    }
+    let mut result = [0.0; 6];
+    for (index, item) in values.iter().enumerate() {
+        result[index] = item
+            .as_f64()
+            .ok_or_else(|| format!("music meta field {key}[{index}] must be numeric"))?;
+    }
+    Ok(result)
+}
+
+fn music_deck_from_json(value: &Value) -> Result<MusicDeck, String> {
+    let cards = value
+        .get("cards")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "deck.cards is required".to_string())?
+        .iter()
+        .map(|card| MusicDeckCard {
+            skill_score_up: card
+                .get("skill_score_up")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            skill_life_recovery: card
+                .get("skill_life_recovery")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+        })
+        .collect::<Vec<_>>();
+    Ok(MusicDeck {
+        total_power: json_i32(value, "total_power")?,
+        event_bonus_rate: value
+            .get("event_bonus_rate")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        support_deck_bonus_rate: value
+            .get("support_deck_bonus_rate")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        cards,
+    })
+}
+
+fn json_i32(value: &Value, key: &str) -> Result<i32, String> {
+    value
+        .get(key)
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| format!("deck.{key} is required"))
+}
+
+fn resolve_event_type(
+    game: &OwnedGameData,
+    params: &allium_deck::handler::BuildParams,
+) -> Result<EventType, String> {
+    let value = params.event_id.and_then(|event_id| {
+        game.events
+            .iter()
+            .find(|event| event.id == event_id)
+            .map(|event| event.event_type.as_str())
+    });
+    parse_event_type(value.or(params.event_type.as_deref()).unwrap_or("marathon"))
+}
+
+fn parse_event_type(value: &str) -> Result<EventType, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "marathon" => Ok(EventType::Marathon),
+        "cheerful" | "cheerful_carnival" | "cheerfulcarnival" => {
+            Ok(EventType::CheerfulCarnival)
+        }
+        "world_bloom" | "worldbloom" | "wl" => Ok(EventType::WorldBloom),
+        _ => Err(format!("invalid event type: {value}")),
+    }
+}
+
+fn parse_live_type(value: &str) -> Result<LiveType, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "solo" => Ok(LiveType::Solo),
+        "auto" => Ok(LiveType::Auto),
+        "multi" => Ok(LiveType::Multi),
+        "cheerful" | "cheerful_live" => Ok(LiveType::Cheerful),
+        "challenge" => Ok(LiveType::Challenge),
+        "challenge_auto" => Ok(LiveType::ChallengeAuto),
+        _ => Err(format!("invalid live type: {value}")),
     }
 }
 
@@ -173,6 +528,12 @@ fn recommend_json(
         search_bonus_targets(&pool, &ctx, &search_params, &params.target_bonus_list).0
     };
     let cost_ms = search_started.elapsed().as_secs_f64() * 1000.0;
+    if results.is_empty() && params.target_bonus_list.is_empty() {
+        return Err(format!(
+            "Cannot recommend any deck in {} cards",
+            user.user_cards.len()
+        ));
+    }
     let cultivated = cultivated_user_cards(user, &game, params)
         .into_iter()
         .map(|card| (card.card_id, card))
@@ -182,7 +543,6 @@ fn recommend_json(
         .filter_map(|result| {
             materialize_deck(
                 result.cards,
-                result.score,
                 &pool,
                 &ctx,
                 &details,
@@ -202,7 +562,6 @@ fn recommend_json(
 #[allow(clippy::too_many_arguments)]
 fn materialize_deck(
     deck: [CardIdx; DECK_SIZE],
-    target_score: u64,
     pool: &CardPool,
     ctx: &SearchContext,
     details: &[FullPrecisionCard],
@@ -232,7 +591,7 @@ fn materialize_deck(
             "skill_level": user_card.map_or(0, |card| card.skill_level),
             "master_rank": user_card.map_or(0, |card| card.master_rank),
             "level": user_card.map_or(0, |card| card.level),
-            "after_training": user_card.is_some_and(|card| card.special_training_status != "none"),
+            "after_training": user_card.is_some_and(user_card_after_training),
             "default_image": user_card.map_or("original", |card| card.default_image.as_str()),
         }));
     }
@@ -259,12 +618,19 @@ fn materialize_deck(
                 "master_rank": detail.master_rank,
                 "level": user_card.map_or(0, |card| card.level),
                 "skill_level": detail.skill_level,
-                "skill_score_up": summary.card_skill_score_up[position],
-                "skill_life_recovery": detail.skill.life_recovery,
+                "skill_score_up": summary.card_skill_score_up[position] as i32,
+                "skill_life_recovery": detail.skill.life_recovery as i32,
                 "episode1_read": episodes >= 1,
                 "episode2_read": episodes >= 2,
-                "after_training": ctx.skill_is_after_training_at(dense),
-                "default_image": default_image(detail.default_image),
+                "after_training": detail.after_training,
+                "default_image": if detail.skill_state_controls_image {
+                    default_image(detail.default_image)
+                } else {
+                    user_card.map_or_else(
+                        || default_image(detail.default_image),
+                        |card| card.default_image.as_str(),
+                    )
+                },
                 "has_canvas_bonus": has_canvas,
             })
         })
@@ -289,15 +655,21 @@ fn materialize_deck(
         .sum::<i32>();
     let total_bonus = summary.event_bonus_total.unwrap_or(0.0);
     let event_bonus = (total_bonus - support_bonus).max(0.0);
-    let mysekai_event_point = if matches!(target, ScoreTarget::Mysekai) {
-        target_score.min(i32::MAX as u64) as i32
+    let mysekai_event_point = if matches!(ctx.live_type, LiveType::Mysekai)
+        || matches!(target, ScoreTarget::Mysekai)
+    {
+        MYSEKAI_EVENT_POINT
     } else {
         0
     };
-    let score = summary.event_point.unwrap_or(summary.live_score);
+    let score = if matches!(target, ScoreTarget::Mysekai) {
+        0
+    } else {
+        summary.event_point.unwrap_or(summary.live_score)
+    };
 
     Some(json!({
-        "score": if matches!(target, ScoreTarget::Mysekai) { mysekai_event_point } else { score },
+        "score": score,
         "live_score": summary.live_score,
         "mysekai_event_point": mysekai_event_point,
         "total_power": summary.total_power,
@@ -309,10 +681,24 @@ fn materialize_deck(
         "gate_bonus_power": gate_bonus_power,
         "event_bonus_rate": event_bonus,
         "support_deck_bonus_rate": support_bonus,
-        "multi_live_score_up": summary.multi_live_score_up,
+        "multi_live_score_up": if matches!(ctx.live_type, LiveType::Mysekai) {
+            0.0
+        } else {
+            summary.multi_live_score_up
+        },
         "support_deck_cards": support_cards,
         "cards": cards,
     }))
+}
+
+fn user_card_after_training(card: &UserCard) -> bool {
+    matches!(
+        card.special_training_status
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "done" | "special_training" | "trained" | "after_training"
+    )
 }
 
 fn resolve_power_details(

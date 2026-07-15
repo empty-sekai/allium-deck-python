@@ -80,7 +80,6 @@ def test_native_bonus_target_returns_exact_requested_bucket():
     baseline = DeckRecommendOptions.from_dict(
         {
             "region": "cn",
-            "user_data": user,
             "live_type": "multi",
             "event_id": 133,
             "music_id": 1,
@@ -89,6 +88,7 @@ def test_native_bonus_target_returns_exact_requested_bucket():
             "limit": 1,
         }
     )
+    baseline.user_data = user
     maximum = engine.recommend(baseline).decks[0].event_bonus_rate
     baseline.target_bonus_list = [int(maximum)]
     exact = engine.recommend(baseline)
