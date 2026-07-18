@@ -1,6 +1,6 @@
 [package]
 name = "allium-deck-python"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -10,7 +10,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-allium-deck = { version = "0.0.5", git = "https://github.com/empty-sekai/allium-deck.git", rev = "b799502a44a71488e82463ccfa607b2143600b23" }
+allium-deck = { version = "0.0.6", git = "https://github.com/empty-sekai/allium-deck.git", rev = "5fd93b0ac299716c90380d416cfaeb3a01b036f4" }
 pyo3 = { version = "0.23", features = ["abi3-py310"] }
 serde_json = "1"
 

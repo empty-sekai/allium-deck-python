@@ -41,6 +41,11 @@ from sekai_deck_recommend_cpp import (
 Masterdata, music metadata, and user data remain runtime inputs and are not
 bundled into the wheel. The recommendation engine uses Allium's DFS search.
 
+Version `0.0.3` tracks allium-deck `0.0.6`, including the optimized pool
+construction path, explicit AVX-512 dispatch on supported x86-64 CPUs, and
+portable scalar fallbacks for other targets. Performance depends on the CPU,
+account data, activity rules, and candidate pool shape.
+
 ## API coverage
 
 The `sekai_deck_recommend_cpp` interface includes the complete LunaBot deck
