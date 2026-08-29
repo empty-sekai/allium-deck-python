@@ -145,6 +145,28 @@ class SekaiDeckRecommend:
         )
         return DeckRecommendResult.from_dict(json.loads(payload))
 
+    def build_pool(self, options: DeckRecommendOptions) -> PreparedCardPool:
+        """Build a reusable search pool for `options`.
+
+        A `recommend` call spends most of its time building the candidate pool
+        and only a small fraction searching it. When the same user, masterdata
+        and options are queried repeatedly, build the pool once and search it
+        many times.
+
+        The pool is bound to the user data, masterdata and options it was built
+        from, and does not observe later changes to any of them. Rebuild it when
+        any of those change; holding pools costs extra memory. See the pool
+        reuse section of the README.
+        """
+        region = self._validate_options(options)
+        user_data = self._resolve_user_data(options)
+        native_pool = self._require_native().build_pool(
+            region,
+            json.dumps(options._to_native_dict(), separators=(",", ":")),
+            user_data._native,
+        )
+        return PreparedCardPool(native_pool)
+
     def recommend_batch(
         self, options_list: list[DeckRecommendOptions]
     ) -> list[DeckRecommendResult]:
@@ -234,6 +256,51 @@ class SekaiDeckRecommend:
         return json.loads(payload)
 
 
+class PreparedCardPool:
+    """A pre-built search pool returned by `SekaiDeckRecommend.build_pool`.
+
+    Searching a pool skips pool construction, which is the dominant cost of a
+    `recommend` call. The pool holds the candidate set, the search context and
+    the resolved card details, so it occupies memory proportional to the
+    candidate count until it is released.
+
+    It does not track the user data, masterdata or options it was built from.
+    If any of those change, discard the pool and build a new one.
+    """
+
+    __slots__ = ("_native",)
+
+    def __init__(self, native) -> None:
+        self._native = native
+
+    @property
+    def card_count(self) -> int:
+        """Number of candidate cards in the pool."""
+        return self._native.card_count
+
+    @property
+    def limit(self) -> int:
+        """The `limit` the pool was built with."""
+        return self._native.limit
+
+    @property
+    def timeout_ms(self) -> int:
+        """The `timeout_ms` the pool was built with."""
+        return self._native.timeout_ms
+
+    def recommend(
+        self, limit: int | None = None, timeout_ms: int | None = None
+    ) -> DeckRecommendResult:
+        """Search the pool.
+
+        `limit` and `timeout_ms` affect only the search stage and may be
+        overridden per call. Every other option is fixed at build time; changing
+        one requires building a new pool.
+        """
+        payload = self._native.recommend(limit, timeout_ms)
+        return DeckRecommendResult.from_dict(json.loads(payload))
+
+
 __all__ = [
     "DeckRecommendCardConfig",
     "DeckRecommendGaOptions",
@@ -242,6 +309,7 @@ __all__ = [
     "DeckRecommendSaOptions",
     "DeckRecommendSingleCardConfig",
     "DeckRecommendUserData",
+    "PreparedCardPool",
     "RecommendCard",
     "RecommendDeck",
     "RecommendSupportDeckCard",
