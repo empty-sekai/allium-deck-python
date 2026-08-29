@@ -25,3 +25,8 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Pin the rule set explicitly so a newer ruff cannot widen it and fail CI on
+# code that has not changed. These are ruff's documented defaults.
+select = ["E4", "E7", "E9", "F"]
