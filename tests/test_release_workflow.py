@@ -39,4 +39,4 @@ def test_python_abi_floor_remains_310() -> None:
 
 def test_native_binding_pins_the_reviewed_deck_004_release_commit() -> None:
     cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-    assert 'rev = "1bda1f7b00015d516680fbb062466b0f1193df46"' in cargo
+    assert 'rev = "6752537f30b645f19bc97cc8fb5c95b5148d73a1"' in cargo
