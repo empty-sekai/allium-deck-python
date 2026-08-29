@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "allium-sekai-deck"
-version = "0.0.4"
+version = "0.0.5"
 description = "Precompiled Rust deck recommendation engine for Python and LunaBot integrations"
 requires-python = ">=3.10,<4"
 readme = "README.md"
