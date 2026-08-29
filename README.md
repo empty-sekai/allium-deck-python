@@ -41,10 +41,13 @@ from sekai_deck_recommend_cpp import (
 Masterdata, music metadata, and user data remain runtime inputs and are not
 bundled into the wheel. The recommendation engine uses Allium's DFS search.
 
-Version `0.0.3` tracks allium-deck `0.0.6`, including the optimized pool
+Version `0.0.4` tracks allium-deck `0.0.7`, including the optimized pool
 construction path, explicit AVX-512 dispatch on supported x86-64 CPUs, and
-portable scalar fallbacks for other targets. Performance depends on the CPU,
-account data, activity rules, and candidate pool shape.
+portable scalar fallbacks for other targets. Relative to `0.0.6`, the engine
+closes Top-K exactness gaps in World Link dominance pruning and final-chapter
+member alternatives, makes the search time limit actually interrupt long runs,
+and precomputes support-deck rates. Performance depends on the CPU, account
+data, activity rules, and candidate pool shape.
 
 ## API coverage
 
