@@ -30,6 +30,7 @@ def test_public_module_exports_the_complete_deck_api():
         "DeckRecommendSaOptions",
         "DeckRecommendSingleCardConfig",
         "DeckRecommendUserData",
+        "PreparedCardPool",
         "RecommendCard",
         "RecommendDeck",
         "RecommendSupportDeckCard",

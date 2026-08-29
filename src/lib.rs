@@ -139,6 +139,49 @@ impl NativeEngine {
             .map_err(PyRuntimeError::new_err)
     }
 
+    /// 构建可复用的搜索池。付一次建池成本，之后每次 `NativeCardPool.recommend`
+    /// 只付搜索成本。池不随 masterdata 或 user_data 的后续变化自动失效，
+    /// 何时重建由调用方负责。
+    fn build_pool(
+        &self,
+        py: Python<'_>,
+        region: &str,
+        options_json: &str,
+        user_data: &NativeUserData,
+    ) -> PyResult<NativeCardPool> {
+        let game = self
+            .regions
+            .read()
+            .map_err(lock_error)?
+            .get(region)
+            .map(|data| Arc::clone(&data.game))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!("masterdata for region {region} is not loaded"))
+            })?;
+        let params = parse_build_params_json(options_json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let user = Arc::clone(&user_data.profile);
+        py.allow_threads(move || -> Result<NativeCardPool, String> {
+            let owned: &OwnedGameData = &game;
+            let game_ref = owned.as_ref();
+            let (pool, ctx, details) = build_card_pool_with_details(&user, &game_ref, &params)
+                .map_err(|error| error.to_string())?;
+            let cultivated = cultivated_cards_by_id(&user, owned, &params);
+            Ok(NativeCardPool {
+                pool,
+                ctx,
+                details,
+                cultivated,
+                user: Arc::clone(&user),
+                target: params.target,
+                target_bonus_list: params.target_bonus_list,
+                limit: params.limit,
+                timeout_ms: params.timeout_ms,
+            })
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+
     fn get_world_bloom_support_cards(
         &self,
         py: Python<'_>,
@@ -509,6 +552,72 @@ fn build_game(
     OwnedGameData::from_sources(&sources)
 }
 
+/// 预构建的搜索池：构建一次，可重复搜索。
+///
+/// 池与 `(user_data, masterdata, options)` 三者绑定。任意一项变化后必须重建，
+/// 否则搜索会基于过期数据得出错误结果——本类型不会自动侦测这些变化。
+/// 缓存策略与生命周期完全由调用方决定；持有池会占用额外内存。
+#[pyclass]
+struct NativeCardPool {
+    pool: CardPool,
+    ctx: SearchContext,
+    details: Vec<FullPrecisionCard>,
+    cultivated: HashMap<i32, UserCard>,
+    user: Arc<UserProfile>,
+    target: ScoreTarget,
+    target_bonus_list: Vec<i32>,
+    limit: usize,
+    timeout_ms: u64,
+}
+
+#[pymethods]
+impl NativeCardPool {
+    /// 池内候选卡数量。
+    #[getter]
+    fn card_count(&self) -> usize {
+        self.pool.count()
+    }
+
+    /// 构建该池时使用的 `limit`。
+    #[getter]
+    fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// 构建该池时使用的 `timeout_ms`。
+    #[getter]
+    fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+    }
+
+    /// 在池上搜索。`limit` 与 `timeout_ms` 只作用于搜索阶段，可安全覆盖；
+    /// 其余选项已固化在池中，需要改动就得重建池。
+    #[pyo3(signature = (limit=None, timeout_ms=None))]
+    fn recommend(
+        &self,
+        py: Python<'_>,
+        limit: Option<usize>,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<String> {
+        let top_k = limit.unwrap_or(self.limit);
+        let deadline = timeout_ms.unwrap_or(self.timeout_ms);
+        py.allow_threads(|| {
+            search_and_materialize(
+                &self.pool,
+                &self.ctx,
+                &self.details,
+                &self.cultivated,
+                &self.user,
+                self.target,
+                &self.target_bonus_list,
+                top_k,
+                deadline,
+            )
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+}
+
 fn recommend_json(
     user: &UserProfile,
     owned: &OwnedGameData,
@@ -517,39 +626,63 @@ fn recommend_json(
     let game = owned.as_ref();
     let (pool, ctx, details) =
         build_card_pool_with_details(user, &game, params).map_err(|error| error.to_string())?;
-    let search_params = SearchParams {
-        top_k: params.limit,
-        timeout_ms: params.timeout_ms,
-    };
+    let cultivated = cultivated_cards_by_id(user, owned, params);
+    search_and_materialize(
+        &pool,
+        &ctx,
+        &details,
+        &cultivated,
+        user,
+        params.target,
+        &params.target_bonus_list,
+        params.limit,
+        params.timeout_ms,
+    )
+}
+
+fn cultivated_cards_by_id(
+    user: &UserProfile,
+    owned: &OwnedGameData,
+    params: &allium_deck::handler::BuildParams,
+) -> HashMap<i32, UserCard> {
+    cultivated_user_cards(user, &owned.as_ref(), params)
+        .into_iter()
+        .map(|card| (card.card_id, card))
+        .collect()
+}
+
+/// 在已构建的池上搜索并渲染结果。`recommend_json` 与预构建池共用此路径，
+/// 保证两条入口的输出完全一致。
+#[allow(clippy::too_many_arguments)]
+fn search_and_materialize(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    details: &[FullPrecisionCard],
+    cultivated: &HashMap<i32, UserCard>,
+    user: &UserProfile,
+    target: ScoreTarget,
+    target_bonus_list: &[i32],
+    top_k: usize,
+    timeout_ms: u64,
+) -> Result<String, String> {
+    let search_params = SearchParams { top_k, timeout_ms };
     let search_started = Instant::now();
-    let results = if params.target_bonus_list.is_empty() {
-        search(&pool, &ctx, &search_params)
+    let results = if target_bonus_list.is_empty() {
+        search(pool, ctx, &search_params)
     } else {
-        search_bonus_targets(&pool, &ctx, &search_params, &params.target_bonus_list).0
+        search_bonus_targets(pool, ctx, &search_params, target_bonus_list).0
     };
     let cost_ms = search_started.elapsed().as_secs_f64() * 1000.0;
-    if results.is_empty() && params.target_bonus_list.is_empty() {
+    if results.is_empty() && target_bonus_list.is_empty() {
         return Err(format!(
             "Cannot recommend any deck in {} cards",
             user.user_cards.len()
         ));
     }
-    let cultivated = cultivated_user_cards(user, &game, params)
-        .into_iter()
-        .map(|card| (card.card_id, card))
-        .collect::<HashMap<_, _>>();
     let decks = results
         .iter()
         .filter_map(|result| {
-            materialize_deck(
-                result.cards,
-                &pool,
-                &ctx,
-                &details,
-                &cultivated,
-                user,
-                params.target,
-            )
+            materialize_deck(result.cards, pool, ctx, details, cultivated, user, target)
         })
         .collect::<Vec<_>>();
     serde_json::to_string(&json!({
@@ -756,6 +889,7 @@ fn lock_error<T>(error: std::sync::PoisonError<T>) -> PyErr {
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeEngine>()?;
     module.add_class::<NativeUserData>()?;
+    module.add_class::<NativeCardPool>()?;
     Ok(())
 }
 
