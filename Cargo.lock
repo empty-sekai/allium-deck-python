@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "allium-deck"
-version = "0.0.6"
-source = "git+https://github.com/empty-sekai/allium-deck.git?rev=5fd93b0ac299716c90380d416cfaeb3a01b036f4#5fd93b0ac299716c90380d416cfaeb3a01b036f4"
+version = "0.0.7"
+source = "git+https://github.com/empty-sekai/allium-deck.git?rev=1bda1f7b00015d516680fbb062466b0f1193df46#1bda1f7b00015d516680fbb062466b0f1193df46"
 dependencies = [
  "serde",
  "serde_json",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "allium-deck-python"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "allium-deck",
  "pyo3",
